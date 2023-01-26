@@ -1,4 +1,4 @@
-from typing import List, Tuple, Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -6,10 +6,10 @@ from nebullvm.config import QUANTIZATION_DATA_NUM
 from nebullvm.operations.inference_learners.base import BaseInferenceLearner
 from nebullvm.operations.measures.base import Measure
 from nebullvm.operations.measures.utils import (
-    compute_torch_latency,
-    compute_tf_latency,
     compute_onnx_latency,
     compute_relative_difference,
+    compute_tf_latency,
+    compute_torch_latency,
 )
 from nebullvm.tools.base import DeepLearningFramework
 from nebullvm.tools.data import DataManager
@@ -65,6 +65,9 @@ class MetricDropMeasure(Measure):
         relative_difference = aggregation_func(relative_differences)
         self.valid = relative_difference <= perf_loss_ths
         self.measure_result = relative_difference
+        print(
+            f"Relative difference: {relative_difference}, valid: {self.valid}, threshold: {perf_loss_ths}"
+        )
 
     def get_result(self) -> Tuple:
         return self.valid, self.measure_result
@@ -96,9 +99,7 @@ class LatencyOriginalModelMeasure(Measure):
         self.measure_result, _ = COMPUTE_LATENCY_FRAMEWORK[dl_framework](
             inputs, model, self.device
         )
-        self.logger.info(
-            f"Original model latency: {self.measure_result} sec/iter"
-        )
+        self.logger.info(f"Original model latency: {self.measure_result} sec/iter")
 
     def get_result(self) -> Optional[Tuple]:
         if self.outputs is not None and self.measure_result is not None:

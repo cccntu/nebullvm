@@ -1,6 +1,6 @@
 import abc
 from pathlib import Path
-from typing import Optional, List, Union
+from typing import List, Optional, Union
 
 from nebullvm.operations.base import Operation
 from nebullvm.operations.conversions.pytorch import convert_torch_to_onnx
@@ -38,6 +38,8 @@ class Converter(Operation, abc.ABC):
 
 
 class PytorchConverter(Converter):
+    """Converts a Pytorch model to other formats. (Currently only ONNX)"""
+
     DEST_FRAMEWORKS = [DeepLearningFramework.NUMPY]
 
     def execute(
@@ -45,6 +47,7 @@ class PytorchConverter(Converter):
         save_path: Path,
         model_params: ModelParams,
     ):
+        # converted models are stored in this list, accessible via get_result()
         self.converted_models = [self.model]
         for framework in self.DEST_FRAMEWORKS:
             if framework is DeepLearningFramework.NUMPY:

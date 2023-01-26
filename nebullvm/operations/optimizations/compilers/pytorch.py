@@ -1,8 +1,7 @@
-from typing import Union, List, Tuple
+from typing import List, Tuple, Union
 
 from nebullvm.config import QUANTIZATION_DATA_NUM
 from nebullvm.operations.optimizations.compilers.base import Compiler
-
 from nebullvm.operations.optimizations.compilers.quantizations.pytorch import (
     quantize_pytorch,
 )
@@ -10,13 +9,13 @@ from nebullvm.operations.optimizations.compilers.quantizations.utils import (
     check_quantization,
 )
 from nebullvm.optional_modules.torch import (
-    torch,
+    GraphModule,
     Module,
     ScriptModule,
-    GraphModule,
     symbolic_trace,
+    torch,
 )
-from nebullvm.tools.base import QuantizationType, Device
+from nebullvm.tools.base import Device, QuantizationType
 from nebullvm.tools.data import DataManager
 from nebullvm.tools.transformations import MultiStageTransformation
 
@@ -67,18 +66,14 @@ class PytorchBackendCompiler(Compiler):
         )
 
         check_quantization(quantization_type, metric_drop_ths)
-        train_input_data = input_data.get_split("train").get_list(
-            QUANTIZATION_DATA_NUM
-        )
+        train_input_data = input_data.get_split("train").get_list(QUANTIZATION_DATA_NUM)
 
         if quantization_type is not None:
             model = self._quantize_model(
                 model, quantization_type, input_tfms, train_input_data
             )
 
-        self.compiled_model = self._compile_model(
-            model, input_data, quantization_type
-        )
+        self.compiled_model = self._compile_model(model, input_data, quantization_type)
 
     def _compile_model(
         self,
@@ -86,10 +81,23 @@ class PytorchBackendCompiler(Compiler):
         input_data: DataManager,
         quantization_type: QuantizationType,
     ) -> ScriptModule:
+        print("Compiling model... using Pytorch JIT")
         input_sample = input_data.get_list(1)[0]
         if self.device is Device.GPU:
             if quantization_type is QuantizationType.HALF:
-                input_sample = [t.cuda().half() for t in input_sample]
+                self.logger.info(
+                    f"Converting model to half precision for {self.device.value}."
+                )
+                self.logger.info(
+                    f"original data types = {[t.dtype for t in input_sample]}"
+                )
+                input_sample = [
+                    t.cuda().half() if torch.is_floating_point(t) else t.cuda()
+                    for t in input_sample
+                ]
+                self.logger.info(
+                    f"converted data types = {[t.dtype for t in input_sample]}"
+                )
             else:
                 input_sample = [t.cuda() for t in input_sample]
 

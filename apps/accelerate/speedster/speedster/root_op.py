@@ -4,69 +4,58 @@ import pickle
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import (
-    Any,
-    Union,
-    Iterable,
-    Sequence,
-    Dict,
-    Callable,
-    List,
+from typing import Any, Callable, Dict, Iterable, List, Sequence, Union
+
+from speedster.utils import (
+    generate_model_id,
+    get_hw_info,
+    get_model_name,
+    read_model_size,
 )
+from tabulate import tabulate
 
 from nebullvm import setup_logger
-from nebullvm.config import TRAIN_TEST_SPLIT_RATIO, MIN_NUMBER
+from nebullvm.config import MIN_NUMBER, TRAIN_TEST_SPLIT_RATIO
 from nebullvm.operations.base import Operation
 from nebullvm.operations.conversions.converters import (
+    ONNXConverter,
     PytorchConverter,
     TensorflowConverter,
-    ONNXConverter,
 )
 from nebullvm.operations.conversions.huggingface import convert_hf_model
 from nebullvm.operations.fetch_operations.local import (
-    FetchModelFromLocal,
     FetchDataFromLocal,
+    FetchModelFromLocal,
 )
 from nebullvm.operations.inference_learners.base import BaseInferenceLearner
 from nebullvm.operations.measures.measures import LatencyOriginalModelMeasure
 from nebullvm.operations.measures.utils import QUANTIZATION_METRIC_MAP
 from nebullvm.operations.optimizations.optimizers import (
-    PytorchOptimizer,
     ONNXOptimizer,
+    PytorchOptimizer,
     TensorflowOptimizer,
 )
-from nebullvm.operations.optimizations.utils import (
-    map_compilers_and_compressors,
-)
+from nebullvm.operations.optimizations.utils import map_compilers_and_compressors
 from nebullvm.optional_modules.tensorflow import tensorflow as tf
-from nebullvm.optional_modules.torch import Module, DataLoader
+from nebullvm.optional_modules.torch import DataLoader, Module
 from nebullvm.optional_modules.utils import check_dependencies
 from nebullvm.tools.base import (
-    ModelCompiler,
     DeepLearningFramework,
+    Device,
+    ModelCompiler,
+    ModelCompressor,
     ModelParams,
     OptimizationTime,
-    ModelCompressor,
-    Device,
 )
 from nebullvm.tools.data import DataManager
 from nebullvm.tools.feedback_collector import FeedbackCollector
 from nebullvm.tools.utils import (
-    get_dl_framework,
-    is_huggingface_data,
     check_input_data,
-    is_data_subscriptable,
     extract_info_from_data,
+    get_dl_framework,
+    is_data_subscriptable,
+    is_huggingface_data,
 )
-from tabulate import tabulate
-
-from speedster.utils import (
-    get_model_name,
-    read_model_size,
-    generate_model_id,
-    get_hw_info,
-)
-
 
 SPEEDSTER_FEEDBACK_COLLECTOR = FeedbackCollector(
     url="https://nebuly.cloud/v1/store_speedster_results",
@@ -109,6 +98,7 @@ class SpeedsterRootOp(Operation):
 
     def _get_conversion_op(self, dl_framework: DeepLearningFramework):
         if dl_framework == DeepLearningFramework.PYTORCH:
+            self.logger.info(f"framework is {dl_framework}, will convert to onnx")
             conversion_op = self.torch_conversion_op
         elif dl_framework == DeepLearningFramework.TENSORFLOW:
             conversion_op = self.tensorflow_conversion_op
@@ -132,6 +122,7 @@ class SpeedsterRootOp(Operation):
         **kwargs,
     ):
         self.logger.info(f"Running Speedster on {self.device.name}")
+        self.logger.info(f"inside type {type(self)}")
 
         check_dependencies(self.device)
 
@@ -180,9 +171,7 @@ class SpeedsterRootOp(Operation):
                     input_names,
                     output_structure,
                     output_type,
-                ) = convert_hf_model(
-                    self.model, self.data, self.device, **kwargs
-                )
+                ) = convert_hf_model(self.model, self.data, self.device, **kwargs)
                 needs_conversion_to_hf = True
 
                 if dynamic_info is None:
@@ -243,9 +232,7 @@ class SpeedsterRootOp(Operation):
             self.feedback_collector.store_info(
                 key="model_id", value=generate_model_id(model_name)
             )
-            self.feedback_collector.store_info(
-                key="model_metadata", value=model_info
-            )
+            self.feedback_collector.store_info(key="model_metadata", value=model_info)
             self.feedback_collector.store_info(
                 key="hardware_setup", value=get_hw_info(self.device)
             )
@@ -270,6 +257,13 @@ class SpeedsterRootOp(Operation):
 
                 # Convert model to all available frameworks
                 self.conversion_op = self._get_conversion_op(dl_framework)
+
+                self.logger.info(
+                    f"self.conversion_op: {self.conversion_op}, converted model will be saved at {tmp_dir}"
+                )
+                print(
+                    f"self.conversion_op: {self.conversion_op}, converted model will be saved at {tmp_dir}"
+                )
                 self.conversion_op.to(self.device).set_state(
                     self.model, self.data
                 ).execute(
@@ -282,13 +276,10 @@ class SpeedsterRootOp(Operation):
                     original_model_size = (
                         os.path.getsize(self.conversion_op.get_result()[0])
                         if isinstance(self.conversion_op.get_result()[0], str)
-                        else len(
-                            pickle.dumps(
-                                self.conversion_op.get_result()[0], -1
-                            )
-                        )
+                        else len(pickle.dumps(self.conversion_op.get_result()[0], -1))
                     )
                     for model in self.conversion_op.get_result():
+                        self.logger.info(f"optimizing converted model: {model}")
                         optimized_models += self._optimize(
                             model=model,
                             optimization_time=optimization_time,
@@ -319,17 +310,13 @@ class SpeedsterRootOp(Operation):
 
                 optimizations = self.feedback_collector.get("optimizations")
                 best_technique = _convert_technique(
-                    sorted(optimizations, key=lambda x: x["latency"])[0][
-                        "technique"
-                    ]
+                    sorted(optimizations, key=lambda x: x["latency"])[0]["technique"]
                 )
                 optimizations.insert(0, original_model_dict)
                 self.feedback_collector.send_feedback()
                 if store_latencies:
                     model_id = self.feedback_collector.get("model_id", "")
-                    with open(
-                        f"{model_name}_latencies_{model_id[:10]}.json", "w"
-                    ) as f:
+                    with open(f"{model_name}_latencies_{model_id[:10]}.json", "w") as f:
                         json.dump(
                             {
                                 "optimizations": optimizations,
@@ -388,9 +375,7 @@ class SpeedsterRootOp(Operation):
                     sys.stdout, format="<level>{message}</level>"
                 )
                 hw_info = get_hw_info(self.device)
-                hw_name = hw_info[
-                    "cpu" if self.device is Device.CPU else "gpu"
-                ]
+                hw_name = hw_info["cpu" if self.device is Device.CPU else "gpu"]
                 self.logger.info(
                     (
                         f"\n[Speedster results on {hw_name}]\n"
@@ -418,9 +403,9 @@ class SpeedsterRootOp(Operation):
                 setup_logger()
 
                 if needs_conversion_to_hf:
-                    from nebullvm.operations.inference_learners.huggingface import (  # noqa: E501
+                    from nebullvm.operations.inference_learners.huggingface import (
                         HuggingFaceInferenceLearner,
-                    )
+                    )  # noqa: E501
 
                     self.optimal_model = HuggingFaceInferenceLearner(
                         core_inference_learner=optimized_models[0][0],
@@ -450,6 +435,7 @@ class SpeedsterRootOp(Operation):
                 optimization_op = self.tensorflow_optimization_op
             else:
                 optimization_op = self.onnx_optimization_op
+            self.logger.info(f"optimization_op {optimization_op}")
 
             optimization_op.to(self.device).execute(
                 model=model,
